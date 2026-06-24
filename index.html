@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Frame Extractor · 在线视频抽帧工具</title>
+<meta name="description" content="免费在线视频抽帧工具：拖动定位到任意一帧，一键抽取首帧 / 当前帧 / 尾帧导出图片。全程在浏览器本地完成，视频不上传服务器。">
+<meta name="theme-color" content="#0a0a0b">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Frame Extractor · 在线视频抽帧工具">
+<meta property="og:description" content="拖动定位到任意一帧，一键抽取导出图片。纯浏览器本地处理，视频不上传服务器。">
+<meta property="og:image" content="og-image.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="og-image.jpg">
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<style>
+  :root{
+    --bg:#0a0a0b; --line:rgba(255,255,255,.10); --line-2:rgba(255,255,255,.20);
+    --t1:rgba(255,255,255,.92); --t2:rgba(255,255,255,.55); --t3:rgba(255,255,255,.34);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue","PingFang SC",sans-serif;
+    background:var(--bg);color:var(--t1);min-height:100%;display:flex;flex-direction:column;
+    -webkit-font-smoothing:antialiased;
+  }
+  .brand{position:fixed;top:20px;left:24px;display:flex;align-items:center;gap:9px;z-index:5}
+  .brand .logo{width:24px;height:24px;border-radius:7px;background:linear-gradient(135deg,#6c8cff,#4ad6c8);
+    display:flex;align-items:center;justify-content:center;font-weight:800;color:#0a0a0b;font-size:13px}
+  .brand span{font-size:12px;letter-spacing:3px;color:var(--t3);text-transform:uppercase}
+
+  main{flex:1;display:flex;align-items:center;justify-content:center;padding:70px 24px 40px}
+  .stage{width:100%;max-width:880px}
+
+  /* ---------- import ---------- */
+  #dropView{border:1px solid var(--line-2);border-radius:14px;padding:90px 20px;text-align:center;
+    cursor:pointer;transition:.2s;background:transparent}
+  #dropView:hover,#dropView.drag{border-color:rgba(255,255,255,.5);background:rgba(255,255,255,.03)}
+  #dropView .big{font-size:16px;letter-spacing:4px;text-transform:uppercase;color:var(--t1);margin-bottom:14px}
+  #dropView .sub{font-size:12px;letter-spacing:1px;color:var(--t3)}
+
+  /* ---------- editor ---------- */
+  #editView{display:none}
+  .preview{position:relative;border:1px solid var(--line-2);border-radius:14px;overflow:hidden;background:#000}
+  .preview video{width:100%;display:block;max-height:54vh;object-fit:contain;background:#000}
+  .overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;cursor:pointer;
+    font-size:17px;letter-spacing:5px;text-transform:uppercase;color:var(--t2);
+    background:rgba(0,0,0,.25);transition:.2s}
+  .overlay:hover{color:var(--t1)}
+
+  .rule{height:1px;background:var(--line);border:0;margin:30px 0}
+
+  /* transport */
+  .transport{display:flex;align-items:center;gap:clamp(14px,3vw,30px)}
+  .play{width:clamp(50px,12vw,64px);height:clamp(50px,12vw,64px);border-radius:50%;border:1px solid var(--line-2);background:transparent;
+    flex-shrink:0;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:.15s}
+  .play:hover{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.45)}
+  .play .tri{width:0;height:0;border-left:18px solid var(--t1);border-top:11px solid transparent;
+    border-bottom:11px solid transparent;margin-left:5px}
+  .play.playing .tri{border:0;width:16px;height:18px;margin:0;
+    background:linear-gradient(90deg,var(--t1) 0 5px,transparent 5px 11px,var(--t1) 11px 16px)}
+  .tright{flex:1;min-width:0}
+  .metarow{display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:nowrap;margin-bottom:16px}
+  .fps{font-size:clamp(10px,2.6vw,12px);letter-spacing:2px;color:var(--t3);text-transform:uppercase;white-space:nowrap}
+  .tc{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:clamp(13px,3.7vw,24px);letter-spacing:1px;color:var(--t1);white-space:nowrap}
+
+  .scrub{position:relative;height:42px;cursor:pointer;touch-action:none}
+  .scrub .ticks{position:absolute;left:0;right:0;top:50%;height:13px;transform:translateY(-50%);
+    background-image:repeating-linear-gradient(90deg,var(--line-2) 0 1px,transparent 1px 56px)}
+  .scrub .fill{position:absolute;left:0;top:50%;height:1px;transform:translateY(-50%);background:rgba(255,255,255,.35);width:0}
+  .knob{position:absolute;top:50%;left:0;width:18px;height:18px;border-radius:50%;background:#fff;
+    transform:translate(-50%,-50%);box-shadow:0 2px 12px rgba(0,0,0,.7);pointer-events:none}
+
+  /* extract */
+  .exlabel{text-align:center;font-size:12px;letter-spacing:4px;color:var(--t3);text-transform:uppercase;margin-bottom:22px}
+  .circles{display:flex;gap:24px;justify-content:center}
+  .circle{width:128px;height:128px;border-radius:50%;border:1px solid var(--line-2);background:transparent;
+    color:var(--t2);font-size:14px;letter-spacing:3px;text-transform:uppercase;cursor:pointer;transition:.18s}
+  .circle:hover{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.55);color:var(--t1);transform:translateY(-2px)}
+  .circle:active{transform:scale(.96)}
+  .circle.flash{animation:fl .45s}
+  @keyframes fl{0%{background:rgba(255,255,255,.35);color:#000}100%{background:transparent}}
+  @media(max-width:560px){.circle{width:96px;height:96px;font-size:12px}.circles{gap:14px}}
+
+  /* shots */
+  .shots-head{display:flex;align-items:center;justify-content:space-between;margin:38px 0 12px;
+    display:none}
+  .shots-head .t{font-size:12px;letter-spacing:3px;color:var(--t3);text-transform:uppercase}
+  .shots-head button{background:transparent;border:1px solid var(--line-2);color:var(--t2);
+    padding:8px 16px;border-radius:8px;font-size:11px;letter-spacing:2px;text-transform:uppercase;cursor:pointer}
+  .shots-head button:hover{border-color:rgba(255,255,255,.5);color:var(--t1)}
+  .shots{display:flex;gap:10px;overflow-x:auto;padding-bottom:6px}
+  .shot{position:relative;flex-shrink:0;width:148px;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#000}
+  .shot img{width:100%;height:82px;object-fit:cover;display:block;cursor:pointer}
+  .shot .b{display:flex;justify-content:space-between;align-items:center;padding:6px 9px;
+    font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--t3)}
+  .shot .b a{color:var(--t1);cursor:pointer;text-decoration:none;letter-spacing:1px}
+  .shot .x{position:absolute;top:5px;right:5px;width:20px;height:20px;border-radius:50%;border:0;
+    background:rgba(0,0,0,.65);color:#fff;font-size:12px;line-height:20px;cursor:pointer;opacity:0;transition:.15s}
+  .shot:hover .x{opacity:1}
+
+  /* bottom */
+  .bottom{padding:0 24px 36px;display:flex;justify-content:center}
+  #newBtn{background:transparent;border:1px solid var(--line);color:var(--t3);display:none;
+    padding:12px 30px;border-radius:10px;font-size:12px;letter-spacing:3px;text-transform:uppercase;cursor:pointer;transition:.15s}
+  #newBtn:hover{border-color:rgba(255,255,255,.4);color:var(--t1)}
+
+  #lb{position:fixed;inset:0;background:rgba(0,0,0,.9);display:none;align-items:center;justify-content:center;z-index:50;padding:30px}
+  #lb img{max-width:100%;max-height:100%;border-radius:8px}
+</style>
+</head>
+<body>
+<div class="brand"><div class="logo">F</div><span>视频抽帧</span></div>
+
+<main>
+  <div class="stage">
+    <!-- import -->
+    <div id="dropView">
+      <div class="big">拖入视频</div>
+      <div class="sub">或点击选择 · MP4 / WebM / MOV · 全程本地处理，不上传服务器</div>
+    </div>
+    <input id="file" type="file" accept="video/*" hidden>
+
+    <!-- editor -->
+    <div id="editView">
+      <div class="preview">
+        <video id="preview" playsinline preload="auto"></video>
+        <div class="overlay" id="overlay">点击播放</div>
+      </div>
+
+      <hr class="rule">
+
+      <div class="transport">
+        <button class="play" id="play"><span class="tri"></span></button>
+        <div class="tright">
+          <div class="metarow">
+            <span class="fps" id="fps">24 帧/秒</span>
+            <span class="tc" id="tc">00:00:00 / 00:00:00</span>
+          </div>
+          <div class="scrub" id="scrub">
+            <div class="ticks"></div>
+            <div class="fill" id="fill"></div>
+            <div class="knob" id="knob"></div>
+          </div>
+        </div>
+      </div>
+
+      <hr class="rule">
+
+      <div class="exlabel">抽取</div>
+      <div class="circles">
+        <button class="circle" id="cFirst">首帧</button>
+        <button class="circle" id="cFrame">当前帧</button>
+        <button class="circle" id="cLast">尾帧</button>
+      </div>
+
+      <div class="shots-head" id="shotsHead">
+        <span class="t" id="shotsCount">已抽取</span>
+        <button id="dlAll">全部下载 · ZIP</button>
+      </div>
+      <div class="shots" id="shots"></div>
+    </div>
+  </div>
+</main>
+
+<div class="bottom"><button id="newBtn">↺ 导入新视频</button></div>
+<div id="lb"><img></div>
+
+<script>
+const $=s=>document.querySelector(s);
+const fileInput=$('#file'),dropView=$('#dropView'),editView=$('#editView');
+const preview=$('#preview'),overlay=$('#overlay'),playBtn=$('#play');
+const scrub=$('#scrub'),knob=$('#knob'),fill=$('#fill'),tcEl=$('#tc'),fpsEl=$('#fps');
+const shots=$('#shots'),newBtn=$('#newBtn');
+let FPS=24, dragging=false, raf=0, shotList=[], fileName='video';
+
+/* ---------- import ---------- */
+dropView.onclick=()=>fileInput.click();
+newBtn.onclick=()=>fileInput.click();
+['dragover','dragenter'].forEach(e=>dropView.addEventListener(e,ev=>{ev.preventDefault();dropView.classList.add('drag')}));
+['dragleave','drop'].forEach(e=>dropView.addEventListener(e,ev=>{ev.preventDefault();dropView.classList.remove('drag')}));
+dropView.addEventListener('drop',ev=>{const f=ev.dataTransfer.files[0];if(f)load(f)});
+fileInput.onchange=()=>{if(fileInput.files[0])load(fileInput.files[0])};
+
+function load(f){
+  if(!f.type.startsWith('video/')){alert('请选择视频文件');return}
+  fileName=f.name.replace(/\.[^.]+$/,'');
+  preview.src=URL.createObjectURL(f);
+  preview.onloadedmetadata=()=>{
+    dropView.style.display='none';
+    editView.style.display='block';
+    newBtn.style.display='inline-block';
+    overlay.style.display='flex';
+    preview.currentTime=0.0001;           // paint first frame
+    fpsDone=false;FPS=24;fpsEl.textContent='24 帧/秒';
+    render();
+  };
+}
+
+/* quietly estimate fps from frame callbacks during the user's first play; fall back to 24 */
+let fpsDone=false;
+function sampleFps(){
+  if(fpsDone||!('requestVideoFrameCallback' in preview))return;
+  let last=null,deltas=[];
+  const cb=(now,meta)=>{
+    if(preview.paused)return;
+    if(last!=null){const d=meta.mediaTime-last;if(d>0.001)deltas.push(d)}
+    last=meta.mediaTime;
+    if(deltas.length<8){preview.requestVideoFrameCallback(cb)}
+    else{
+      fpsDone=true;deltas.sort((a,b)=>a-b);
+      const guess=Math.round(1/deltas[deltas.length>>1]);
+      if(guess>=10&&guess<=120){FPS=guess;fpsEl.textContent=FPS+' 帧/秒';render()}
+    }
+  };
+  preview.requestVideoFrameCallback(cb);
+}
+
+/* ---------- timecode ---------- */
+function tc(t){
+  t=Math.max(0,t||0);
+  const m=Math.floor(t/60),s=Math.floor(t%60),f=Math.floor((t-Math.floor(t))*FPS);
+  const p=n=>String(n).padStart(2,'0');
+  return `${p(m)}:${p(s)}:${p(f)}`;
+}
+function render(){
+  const d=preview.duration||0,t=preview.currentTime||0;
+  const pct=d?Math.min(1,t/d):0;
+  knob.style.left=(pct*100)+'%';
+  fill.style.width=(pct*100)+'%';
+  tcEl.textContent=`${tc(t)} / ${tc(d)}`;
+}
+
+/* ---------- play / pause ---------- */
+function toggle(){preview.paused?preview.play():preview.pause()}
+playBtn.onclick=toggle;
+overlay.onclick=toggle;
+preview.addEventListener('play',()=>{overlay.style.display='none';playBtn.classList.add('playing');sampleFps();loop()});
+preview.addEventListener('pause',()=>{playBtn.classList.remove('playing');cancelAnimationFrame(raf)});
+preview.addEventListener('ended',()=>playBtn.classList.remove('playing'));
+preview.addEventListener('seeked',render);
+function loop(){render();raf=requestAnimationFrame(loop)}
+
+/* ---------- scrub (拖动找帧，实时预览) ---------- */
+function scrubTo(clientX){
+  const r=scrub.getBoundingClientRect();
+  let p=(clientX-r.left)/r.width;p=Math.max(0,Math.min(1,p));
+  preview.currentTime=p*(preview.duration||0);
+  render();
+}
+scrub.addEventListener('pointerdown',e=>{dragging=true;scrub.setPointerCapture(e.pointerId);if(!preview.paused)preview.pause();scrubTo(e.clientX)});
+scrub.addEventListener('pointermove',e=>{if(dragging)scrubTo(e.clientX)});
+scrub.addEventListener('pointerup',()=>dragging=false);
+scrub.addEventListener('pointercancel',()=>dragging=false);
+
+/* keyboard: space play/pause, ←/→ step a frame */
+addEventListener('keydown',e=>{
+  if(editView.style.display==='none')return;
+  if(e.code==='Space'){e.preventDefault();toggle()}
+  else if(e.code==='ArrowLeft'){preview.pause();preview.currentTime=Math.max(0,preview.currentTime-1/FPS)}
+  else if(e.code==='ArrowRight'){preview.pause();preview.currentTime=Math.min(preview.duration,preview.currentTime+1/FPS)}
+});
+
+/* ---------- extract ---------- */
+const cv=document.createElement('canvas'),cx=cv.getContext('2d');
+function grab(){cv.width=preview.videoWidth;cv.height=preview.videoHeight;cx.drawImage(preview,0,0);return cv.toDataURL('image/jpeg',.92)}
+function seek(t){return new Promise(r=>{const on=()=>{preview.removeEventListener('seeked',on);r()};preview.addEventListener('seeked',on);preview.currentTime=Math.min(Math.max(0,t),(preview.duration||0)-0.001)})}
+async function capture(at,btn){
+  if(!preview.src)return;
+  const back=preview.currentTime;
+  if(at!=null){await seek(at)}
+  addShot(grab(),preview.currentTime);
+  if(at!=null){await seek(back);render()}
+  if(btn){btn.classList.remove('flash');void btn.offsetWidth;btn.classList.add('flash')}
+}
+$('#cFirst').onclick=e=>capture(0,e.currentTarget);
+$('#cFrame').onclick=e=>capture(null,e.currentTarget);
+$('#cLast').onclick=e=>capture(Math.max(0,(preview.duration||0)-1/FPS),e.currentTarget);
+
+function addShot(url,t){
+  shotList.push({url,t});
+  const el=document.createElement('div');el.className='shot';
+  el.innerHTML=`<button class="x">×</button><img src="${url}"><div class="b"><span>${tc(t)}</span><a>保存</a></div>`;
+  el.querySelector('img').onclick=()=>{$('#lb').style.display='flex';$('#lb img').src=url};
+  el.querySelector('a').onclick=()=>dl(url,`${fileName}_${tc(t).replace(/:/g,'-')}.jpg`);
+  el.querySelector('.x').onclick=()=>{const k=shotList.findIndex(s=>s.url===url);if(k>-1)shotList.splice(k,1);el.remove();sync()};
+  shots.appendChild(el);shots.scrollLeft=shots.scrollWidth;sync();
+}
+function sync(){
+  const n=shotList.length;
+  $('#shotsHead').style.display=n?'flex':'none';
+  $('#shotsCount').textContent=`已抽取 · ${n}`;
+}
+
+/* ---------- download ---------- */
+function dl(url,name){const a=document.createElement('a');a.href=url;a.download=name;a.click()}
+$('#dlAll').onclick=async()=>{
+  if(!shotList.length)return;
+  const b=$('#dlAll'),txt=b.textContent;b.textContent='打包中…';
+  const zip=new JSZip();
+  shotList.forEach((s,i)=>zip.file(`${fileName}_${String(i+1).padStart(3,'0')}_${tc(s.t).replace(/:/g,'-')}.jpg`,s.url.split(',')[1],{base64:true}));
+  const blob=await zip.generateAsync({type:'blob'});
+  dl(URL.createObjectURL(blob),`${fileName}_frames.zip`);
+  b.textContent=txt;
+};
+$('#lb').onclick=()=>$('#lb').style.display='none';
+</script>
+</body>
+</html>
