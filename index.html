@@ -104,10 +104,13 @@
   .shot:hover .x{opacity:1}
 
   /* bottom */
-  .bottom{padding:0 24px 36px;display:flex;justify-content:center}
+  .bottom{padding:0 24px 36px;display:flex;flex-direction:column;align-items:center;gap:18px}
   #newBtn{background:transparent;border:1px solid var(--line);color:var(--t3);display:none;
     padding:12px 30px;border-radius:10px;font-size:12px;letter-spacing:3px;text-transform:uppercase;cursor:pointer;transition:.15s}
   #newBtn:hover{border-color:rgba(255,255,255,.4);color:var(--t1)}
+  /* 公开使用计数（达到阈值才显示） */
+  #usage{display:none;font-size:12px;letter-spacing:2px;color:var(--t3)}
+  #usage b{color:var(--t1);font-variant-numeric:tabular-nums;font-weight:700;letter-spacing:1px}
 
   #lb{position:fixed;inset:0;background:rgba(0,0,0,.9);display:none;align-items:center;justify-content:center;z-index:50;padding:30px}
   #lb img{max-width:100%;max-height:100%;border-radius:8px}
@@ -167,7 +170,10 @@
   </div>
 </main>
 
-<div class="bottom"><button id="newBtn">↺ 导入新视频</button></div>
+<div class="bottom">
+  <button id="newBtn">↺ 导入新视频</button>
+  <div id="usage"></div>
+</div>
 <div id="lb"><img></div>
 
 <script>
@@ -177,6 +183,65 @@ const preview=$('#preview'),overlay=$('#overlay'),playBtn=$('#play');
 const scrub=$('#scrub'),knob=$('#knob'),fill=$('#fill'),tcEl=$('#tc'),fpsEl=$('#fps');
 const shots=$('#shots'),newBtn=$('#newBtn');
 let FPS=24, dragging=false, raf=0, shotList=[], fileName='video';
+
+/* ===================== 数据统计 =====================
+   一份数据，两个用途：
+   · Supabase  —— 存每条原始事件（归你、可导出，找工作的凭证）
+   · PostHog   —— 自动算地区/留存/漏斗（面板漂亮，截图展示）
+   · 底部公开计数 —— 读 Supabase 聚合数，达到阈值才显示
+   注册后把下面 4 个值填上即可生效；留空则统计自动关闭、不影响工具使用。 */
+const ANALYTICS={
+  supabaseUrl:'https://tapnmiixmbxtghjsqwmt.supabase.co',
+  supabaseAnonKey:'sb_publishable_uNv96RjtKXlXzKKDIxcXOg_yhcKsLwY',  // 可发布密钥（可公开）
+  posthogKey:'',         // PostHog 的 Project API Key（之后补）
+  posthogHost:'https://us.i.posthog.com',  // 若选欧区改成 https://eu.i.posthog.com
+  publicCounterThreshold:50,               // 公开计数达到多少人才显示
+};
+
+// 访客唯一ID（算真实 UV / 留存的基础，存在本机）
+let visitorId=localStorage.getItem('fe_vid');
+if(!visitorId){visitorId=(crypto.randomUUID?crypto.randomUUID():'v'+Date.now()+Math.random().toString(16).slice(2));localStorage.setItem('fe_vid',visitorId);}
+
+// PostHog（仅在填了 key 时加载）
+if(ANALYTICS.posthogKey){
+  !function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.async=!0,p.src=s.api_host+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.toString(1)+".people (stub)"},o="init capture register register_once register_for_session unregister unregister_for_session getFeatureFlag getFeatureFlagPayload isFeatureEnabled reloadFeatureFlags updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures on onFeatureFlags onSessionId getSurveys getActiveMatchingSurveys renderSurvey canRenderSurvey identify setPersonProperties group resetGroups setPersonPropertiesForFlags resetPersonPropertiesForFlags setGroupPropertiesForFlags resetGroupPropertiesForFlags reset get_distinct_id getGroups get_session_id get_session_replay_url alias set_config startSessionRecording stopSessionRecording sessionRecordingStarted captureException loadToolbar get_property getSessionProperty createPersonProfile opt_in_capturing opt_out_capturing has_opted_in_capturing has_opted_out_capturing clear_opt_in_out_capturing debug getPageViewId".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
+  posthog.init(ANALYTICS.posthogKey,{api_host:ANALYTICS.posthogHost,person_profiles:'always'});
+  try{posthog.identify(visitorId)}catch(e){}
+}
+
+// 统一上报：同时发给 PostHog 和 Supabase
+function track(event,props){
+  props=props||{};
+  try{window.posthog&&posthog.capture(event,props)}catch(e){}
+  if(ANALYTICS.supabaseUrl&&ANALYTICS.supabaseAnonKey){
+    try{
+      fetch(ANALYTICS.supabaseUrl+'/rest/v1/events',{
+        method:'POST',keepalive:true,
+        headers:{'apikey':ANALYTICS.supabaseAnonKey,'Authorization':'Bearer '+ANALYTICS.supabaseAnonKey,
+                 'Content-Type':'application/json','Prefer':'return=minimal'},
+        body:JSON.stringify({visitor_id:visitorId,event:event,props:props,ref:document.referrer||null})
+      }).catch(()=>{});
+    }catch(e){}
+  }
+}
+
+// 底部公开计数：达到阈值才显示
+async function refreshUsage(){
+  if(!ANALYTICS.supabaseUrl||!ANALYTICS.supabaseAnonKey)return;
+  try{
+    const r=await fetch(ANALYTICS.supabaseUrl+'/rest/v1/rpc/get_usage_count',{
+      method:'POST',headers:{'apikey':ANALYTICS.supabaseAnonKey,'Authorization':'Bearer '+ANALYTICS.supabaseAnonKey,'Content-Type':'application/json'},body:'{}'});
+    const n=parseInt(await r.text(),10);
+    if(n>=ANALYTICS.publicCounterThreshold){
+      const el=$('#usage');el.innerHTML=`已有 <b>${n.toLocaleString()}</b> 人使用`;el.style.display='block';
+    }
+  }catch(e){}
+}
+
+// 进站即记一次访问，并刷新公开计数
+track('page_view');
+refreshUsage();
+/* =================================================== */
 
 /* ---------- import ---------- */
 dropView.onclick=()=>fileInput.click();
@@ -198,6 +263,7 @@ function load(f){
     preview.currentTime=0.0001;           // paint first frame
     fpsDone=false;FPS=24;fpsEl.textContent='24 帧/秒';
     render();
+    track('video_import',{duration:Math.round(preview.duration||0)});
   };
 }
 
@@ -269,24 +335,25 @@ addEventListener('keydown',e=>{
 const cv=document.createElement('canvas'),cx=cv.getContext('2d');
 function grab(){cv.width=preview.videoWidth;cv.height=preview.videoHeight;cx.drawImage(preview,0,0);return cv.toDataURL('image/jpeg',.92)}
 function seek(t){return new Promise(r=>{const on=()=>{preview.removeEventListener('seeked',on);r()};preview.addEventListener('seeked',on);preview.currentTime=Math.min(Math.max(0,t),(preview.duration||0)-0.001)})}
-async function capture(at,btn){
+async function capture(at,btn,mode){
   if(!preview.src)return;
+  track('extract',{mode:mode||'frame'});
   const back=preview.currentTime;
   if(at!=null){await seek(at)}
   addShot(grab(),preview.currentTime);
   if(at!=null){await seek(back);render()}
   if(btn){btn.classList.remove('flash');void btn.offsetWidth;btn.classList.add('flash')}
 }
-$('#cFirst').onclick=e=>capture(0,e.currentTarget);
-$('#cFrame').onclick=e=>capture(null,e.currentTarget);
-$('#cLast').onclick=e=>capture(Math.max(0,(preview.duration||0)-1/FPS),e.currentTarget);
+$('#cFirst').onclick=e=>capture(0,e.currentTarget,'first');
+$('#cFrame').onclick=e=>capture(null,e.currentTarget,'frame');
+$('#cLast').onclick=e=>capture(Math.max(0,(preview.duration||0)-1/FPS),e.currentTarget,'last');
 
 function addShot(url,t){
   shotList.push({url,t});
   const el=document.createElement('div');el.className='shot';
   el.innerHTML=`<button class="x">×</button><img src="${url}"><div class="b"><span>${tc(t)}</span><a>保存</a></div>`;
   el.querySelector('img').onclick=()=>{$('#lb').style.display='flex';$('#lb img').src=url};
-  el.querySelector('a').onclick=()=>dl(url,`${fileName}_${tc(t).replace(/:/g,'-')}.jpg`);
+  el.querySelector('a').onclick=()=>{track('download',{type:'single'});dl(url,`${fileName}_${tc(t).replace(/:/g,'-')}.jpg`)};
   el.querySelector('.x').onclick=()=>{const k=shotList.findIndex(s=>s.url===url);if(k>-1)shotList.splice(k,1);el.remove();sync()};
   shots.appendChild(el);shots.scrollLeft=shots.scrollWidth;sync();
 }
@@ -300,6 +367,7 @@ function sync(){
 function dl(url,name){const a=document.createElement('a');a.href=url;a.download=name;a.click()}
 $('#dlAll').onclick=async()=>{
   if(!shotList.length)return;
+  track('download',{type:'zip',count:shotList.length});
   const b=$('#dlAll'),txt=b.textContent;b.textContent='打包中…';
   const zip=new JSZip();
   shotList.forEach((s,i)=>zip.file(`${fileName}_${String(i+1).padStart(3,'0')}_${tc(s.t).replace(/:/g,'-')}.jpg`,s.url.split(',')[1],{base64:true}));
